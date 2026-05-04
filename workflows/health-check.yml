@@ -1,0 +1,156 @@
+name: Dependency Security Check
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    # 每天凌晨 2 点运行
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      project_path:
+        description: 'Path to project directory'
+        required: false
+        default: '.'
+      format:
+        description: 'Report format (text, json, markdown, html)'
+        required: false
+        default: 'html'
+      online:
+        description: 'Use online vulnerability database'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  security-check:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Run Dependency Health Check (HTML)
+        id: html-check
+        run: |
+          PROJECT_PATH="${{ github.event.inputs.project_path || '.' }}"
+          python scripts/dep_health_checker.py "$PROJECT_PATH" \
+            --format html \
+            --output dependency-report.html
+          echo "report_generated=true" >> $GITHUB_OUTPUT
+        continue-on-error: true
+      
+      - name: Run Dependency Health Check (JSON)
+        id: json-check
+        run: |
+          PROJECT_PATH="${{ github.event.inputs.project_path || '.' }}"
+          python scripts/dep_health_checker.py "$PROJECT_PATH" \
+            --format json \
+            --output dependency-report.json
+        continue-on-error: true
+      
+      - name: Run Dependency Health Check (Markdown)
+        id: md-check
+        run: |
+          PROJECT_PATH="${{ github.event.inputs.project_path || '.' }}"
+          python scripts/dep_health_checker.py "$PROJECT_PATH" \
+            --format markdown \
+            --output dependency-report.md
+        continue-on-error: true
+      
+      - name: Upload HTML Report
+        if: always() && steps.html-check.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-health-report-html
+          path: dependency-report.html
+          retention-days: 30
+      
+      - name: Upload JSON Report
+        if: always() && steps.json-check.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-health-report-json
+          path: dependency-report.json
+          retention-days: 30
+      
+      - name: Upload Markdown Report
+        if: always() && steps.md-check.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-health-report-md
+          path: dependency-report.md
+          retention-days: 30
+      
+      - name: Parse and Display Summary
+        if: always() && steps.json-check.outcome == 'success'
+        run: |
+          echo "## 🛡️ Dependency Health Check Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 解析 JSON 报告
+          TOTAL=$(python -c "import json; print(json.load(open('dependency-report.json'))['summary']['total_dependencies'])")
+          VULN=$(python -c "import json; print(json.load(open('dependency-report.json'))['summary']['vulnerable_dependencies'])")
+          OUTDATED=$(python -c "import json; print(json.load(open('dependency-report.json'))['summary']['outdated_dependencies'])")
+          RISK=$(python -c "import json; print(json.load(open('dependency-report.json'))['summary']['risk_score'])")
+          
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Total Dependencies | $TOTAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🚨 Vulnerable | $VULN |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📈 Outdated | $OUTDATED |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📊 Risk Score | $RISK/100 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Reports available in Artifacts." >> $GITHUB_STEP_SUMMARY
+      
+      - name: Check for Critical Vulnerabilities
+        if: always() && steps.json-check.outcome == 'success'
+        run: |
+          CRITICAL=$(python -c "import json; d=json.load(open('dependency-report.json')); print(d['summary']['vulnerability_severity_counts'].get('CRITICAL', 0))")
+          HIGH=$(python -c "import json; d=json.load(open('dependency-report.json')); print(d['summary']['vulnerability_severity_counts'].get('HIGH', 0))")
+          
+          echo "Critical vulnerabilities: $CRITICAL"
+          echo "High vulnerabilities: $HIGH"
+          
+          if [ "$CRITICAL" -gt "0" ]; then
+            echo "::error::🚨 Critical vulnerabilities found: $CRITICAL"
+            exit 1
+          fi
+          
+          if [ "$HIGH" -gt "5" ]; then
+            echo "::warning::⚠️ High vulnerabilities found: $HIGH"
+          fi
+          
+          echo "✅ No critical vulnerabilities found"
+      
+      - name: Comment PR with Report
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let report = '';
+            try {
+              report = fs.readFileSync('dependency-report.md', 'utf8');
+            } catch (e) {
+              report = 'Report generation failed';
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🛡️ Dependency Health Check Results\n\n${report}`
+            })
