@@ -240,10 +240,10 @@ class GoModParser(DependencyParser):
             for line in f:
                 line = line.strip()
                 
-                if line == 'require (‘:
+                if line == "require (":
                     in_require = True
                     continue
-                elif line == ')‘ and in_require:
+                elif line == ")" and in_require:
                     in_require = False
                     continue
                 
@@ -252,7 +252,7 @@ class GoModParser(DependencyParser):
                     parts = line.split()
                     if len(parts) >= 2:
                         name = parts[0]
-                        version = parts[1].strip(‘"\'')
+                        version = parts[1].strip('"\\\'')
                         deps.append(DependencyInfo(
                             name=name,
                             version=version,
@@ -897,7 +897,7 @@ class DependencyHealthChecker:
         lines.append(f"| Vulnerable dependencies | {vuln_emoji} {s['vulnerable_dependencies']} |")
         
         outdated_emoji = "⚠️" if s['outdated_dependencies'] > 0 else "✅"
-        lines.append(f"| Outdated dependencies | {outdated_emoji {s['outdated_dependencies']} |")
+        lines.append(f"| Outdated dependencies | {outdated_emoji} {s['outdated_dependencies']} |")
         lines.append(f"| Risk score | {s['risk_score']}/100 |")
         lines.append("")
         
